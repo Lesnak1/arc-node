@@ -15,7 +15,7 @@ Consult the table below to confirm which version to run for each network.
 
 | Network     | Version |
 |-------------|---------|
-| Arc Testnet | v0.6.0  |
+| Arc Testnet | v0.7.3  |
 
 ## Pre-built Binary
 
