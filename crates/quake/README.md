@@ -1145,7 +1145,7 @@ read a `config.toml`.
 #### Matching Flags to the Target Image Version
 
 Upgrade scenarios can pin an older `arc_consensus` image tag (e.g.
-`v0.7.3`). Quake derives CLI flags from the `StartCmd` definition
+`v0.6.0`). Quake derives CLI flags from the `StartCmd` definition
 compiled into its own binary, which may have gained, renamed, or removed
 flags since that image shipped. Before handing the flags to the
 container, Quake rewrites them to match the target version, i.e., older
