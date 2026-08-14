@@ -122,12 +122,16 @@ echo "Address:            $my_address"
 if [[ -n "$my_pk" ]]; then
   echo "Public Key:         $my_pk"
   echo "In Validator Set:   $(green "yes")"
-  pct=$(echo "scale=1; $my_vp * 100 / $total_vp" | bc)
-  echo "Voting Power:       ${my_vp} / ${total_vp} (${pct}%)"
+  if is_positive_int "$total_vp"; then
+    pct=$(echo "scale=1; $my_vp * 100 / $total_vp" | bc)
+    echo "Voting Power:       ${my_vp} / ${total_vp} (${pct}%)"
+  else
+    echo "Voting Power:       ${my_vp} / ${total_vp:-0} (0.0%)"
+  fi
 else
   echo "Public Key:         (not in validator set)"
   echo "In Validator Set:   $(red "no")"
-  echo "Voting Power:       0 / ${total_vp}"
+  echo "Voting Power:       0 / ${total_vp:-0}"
 fi
 
 section "Consensus"
@@ -187,74 +191,88 @@ section "Proposal History (last $HISTORY_DEPTH heights)"
 
 proposed_count=0
 failed_count=0
-start_height=$((height - HISTORY_DEPTH + 1))
-if [[ $start_height -lt 1 ]]; then start_height=1; fi
-total_checked=$((height - start_height + 1))
 
-BAR_WIDTH=30
+if ! is_positive_int "$height"; then
+  echo "Node is at height ${height:-0} (genesis/syncing); no past proposals to inspect."
+else
+  start_height=$((height - HISTORY_DEPTH + 1))
+  if [[ $start_height -lt 1 ]]; then start_height=1; fi
+  total_checked=$((height - start_height + 1))
 
-progress_bar() {
-  local done=$1 total=$2
-  local pct=$((done * 100 / total))
-  local filled=$((done * BAR_WIDTH / total))
-  local empty=$((BAR_WIDTH - filled))
-  printf '\r  [%s%s] %3d%% (%d/%d)' \
-    "$(printf '#%.0s' $(seq 1 "$filled") 2>/dev/null)" \
-    "$(printf '.%.0s' $(seq 1 "$empty") 2>/dev/null)" \
-    "$pct" "$done" "$total" >&2
-}
+  BAR_WIDTH=30
 
-# print a result line, clearing the progress bar first then redrawing it
-emit() {
+  progress_bar() {
+    local done=$1 total=$2
+    if [[ $total -le 0 ]]; then return; fi
+    local pct=$((done * 100 / total))
+    local filled=$((done * BAR_WIDTH / total))
+    local empty=$((BAR_WIDTH - filled))
+    local filled_str=""
+    local empty_str=""
+    if [[ $filled -gt 0 ]]; then
+      filled_str="$(printf '#%.0s' $(seq 1 "$filled") 2>/dev/null)"
+    fi
+    if [[ $empty -gt 0 ]]; then
+      empty_str="$(printf '.%.0s' $(seq 1 "$empty") 2>/dev/null)"
+    fi
+    printf '\r  [%s%s] %3d%% (%d/%d)' \
+      "$filled_str" \
+      "$empty_str" \
+      "$pct" "$done" "$total" >&2
+  }
+
+  # print a result line, clearing the progress bar first then redrawing it
+  emit() {
+    printf '\r\033[K' >&2
+    echo "$1"
+    progress_bar "$scan_i" "$total_checked"
+  }
+
+  for (( h = start_height; h <= height; h++ )); do
+    scan_i=$((h - start_height + 1))
+    progress_bar "$scan_i" "$total_checked"
+
+    pm=$(rpc_get "/proposal-monitor?height=$h" 2>/dev/null) || continue
+
+    pm_proposer=$(echo "$pm" | jq -r '.proposer')
+    pm_success=$(echo "$pm" | jq -r '.successful // "null"')
+    pm_delay=$(echo "$pm" | jq -r '.proposal_delay_ms // "null"')
+    pm_synced=$(echo "$pm" | jq -r '.synced')
+
+    if [[ "$pm_success" != "true" && "$pm_success" != "null" ]]; then
+      failed_count=$((failed_count + 1))
+      emit "  $(red "Height ${h}"): proposer=${pm_proposer} successful=${pm_success}"
+    fi
+
+    if [[ "$pm_proposer" == "$my_address" ]]; then
+      proposed_count=$((proposed_count + 1))
+      delay_str="delay=${pm_delay}ms"
+      [[ "$pm_delay" == "null" ]] && delay_str="delay=n/a"
+      synced_str=""
+      [[ "$pm_synced" == "true" ]] && synced_str=" (synced)"
+      emit "  $(green "Height ${h}"): ${delay_str} successful=${pm_success}${synced_str}  ← $(bold "OURS")"
+    fi
+  done
   printf '\r\033[K' >&2
-  echo "$1"
-  progress_bar "$scan_i" "$total_checked"
-}
 
-for (( h = start_height; h <= height; h++ )); do
-  scan_i=$((h - start_height + 1))
-  progress_bar "$scan_i" "$total_checked"
-
-  pm=$(rpc_get "/proposal-monitor?height=$h" 2>/dev/null) || continue
-
-  pm_proposer=$(echo "$pm" | jq -r '.proposer')
-  pm_success=$(echo "$pm" | jq -r '.successful // "null"')
-  pm_delay=$(echo "$pm" | jq -r '.proposal_delay_ms // "null"')
-  pm_synced=$(echo "$pm" | jq -r '.synced')
-
-  if [[ "$pm_success" != "true" && "$pm_success" != "null" ]]; then
-    failed_count=$((failed_count + 1))
-    emit "  $(red "Height ${h}"): proposer=${pm_proposer} successful=${pm_success}"
+  echo ""
+  if [[ $total_checked -gt 0 ]]; then
+    pct=$(echo "scale=1; $proposed_count * 100 / $total_checked" | bc)
+  else
+    pct="0.0"
   fi
 
-  if [[ "$pm_proposer" == "$my_address" ]]; then
-    proposed_count=$((proposed_count + 1))
-    delay_str="delay=${pm_delay}ms"
-    [[ "$pm_delay" == "null" ]] && delay_str="delay=n/a"
-    synced_str=""
-    [[ "$pm_synced" == "true" ]] && synced_str=" (synced)"
-    emit "  $(green "Height ${h}"): ${delay_str} successful=${pm_success}${synced_str}  ← $(bold "OURS")"
+  if [[ $proposed_count -eq 0 ]]; then
+    echo "Proposed ${proposed_count}/${total_checked} blocks — $(red "never selected as proposer")"
+  else
+    echo "Proposed ${proposed_count}/${total_checked} blocks (${pct}%) — $(green "ok")"
   fi
-done
-printf '\r\033[K' >&2
 
-echo ""
-if [[ $total_checked -gt 0 ]]; then
-  pct=$(echo "scale=1; $proposed_count * 100 / $total_checked" | bc)
-else
-  pct="0.0"
-fi
-
-if [[ $proposed_count -eq 0 ]]; then
-  echo "Proposed ${proposed_count}/${total_checked} blocks — $(red "never selected as proposer")"
-else
-  echo "Proposed ${proposed_count}/${total_checked} blocks (${pct}%) — $(green "ok")"
-fi
-
-if [[ $failed_count -eq 0 ]]; then
-  echo "All ${total_checked} proposals decided successfully: $(green "yes")"
-else
-  echo "All ${total_checked} proposals decided successfully: $(red "no") (${failed_count} failed)"
+  if [[ $failed_count -eq 0 ]]; then
+    echo "All ${total_checked} proposals decided successfully: $(green "yes")"
+  else
+    echo "All ${total_checked} proposals decided successfully: $(red "no") (${failed_count} failed)"
+  fi
 fi
 
 # --- live monitoring --------------------------------------------------------
