@@ -176,14 +176,15 @@ For an in-depth look at system design and individual components, check out the [
 
 ## Contributing
 
-We welcome contributions! Please follow these steps:
+If you would like to contribute to the Arc Node open-source codebase, please see [CONTRIBUTING.md](./CONTRIBUTING.md).
+We invite all contributors.
+
+Once you are working on a change, validate locally with:
 
 1. **Format and lint**: `make lint`
 2. **Build**: `make build`
 3. **Test**: `make test-unit`
 4. **Check coverage**: `make cov-show`
-
-For more details, see our [Contributing Guide](CONTRIBUTING.md).
 
 ## Resources
 
