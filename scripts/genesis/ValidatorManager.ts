@@ -31,7 +31,7 @@ import {
 } from './types'
 import { BuilderContext } from './context'
 import { AdminUpgradeableProxy, schemaAdminProxy, schemaAdminProxyImpl, setInitializers } from './AdminUpgradeableProxy'
-import { Address, fromHex, keccak256 } from 'viem'
+import { Address, fromHex, keccak256, zeroAddress } from 'viem'
 import { permissionedManagerAddress, validatorRegistryAddress } from './addresses'
 import { VALIDATOR_REGISTRY_VERSION, PERMISSIONED_VALIDATOR_MANAGER_VERSION } from './versions'
 
@@ -55,7 +55,7 @@ export const schemaValidatorManager = z
     validators: z.array(
       z.object({
         publicKey: schemaHex,
-        votingPower: schemaBigInt.max(UINT64_MAX),
+        votingPower: schemaBigInt.min(0n).max(UINT64_MAX),
         /**
          * Controllers authorized to manage this validator. Each controller is
          * wired at genesis to the validator's registration ID (the 1-based
@@ -66,7 +66,7 @@ export const schemaValidatorManager = z
             z
               .object({
                 address: schemaAddress,
-                votingPowerLimit: schemaBigInt.max(UINT64_MAX),
+                votingPowerLimit: schemaBigInt.min(0n).max(UINT64_MAX),
               })
               .strict(),
           )
@@ -138,26 +138,66 @@ export const schemaValidatorManager = z
       ...flattenedControllers.map(({ key, address }) => ({ key, value: address })),
     ])
 
-    // Verify addresses are unique for different roles.
-    const validatorRegistererSet = new Set()
-    for (const validatorRegisterer of permissionedManager.validatorRegisterers) {
-      if (validatorRegistererSet.has(validatorRegisterer)) {
+    if (permissionedManager.owner.toLowerCase() === zeroAddress.toLowerCase()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['PermissionedValidatorManager', 'owner'],
+        message: 'Owner cannot be the zero address',
+      })
+    }
+
+    if (permissionedManager.pauser.toLowerCase() === zeroAddress.toLowerCase()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['PermissionedValidatorManager', 'pauser'],
+        message: 'Pauser cannot be the zero address',
+      })
+    }
+
+    // Verify addresses are unique and non-zero for different roles.
+    const validatorRegistererSet = new Set<string>()
+    for (let i = 0; i < permissionedManager.validatorRegisterers.length; i++) {
+      const validatorRegisterer = permissionedManager.validatorRegisterers[i]
+      const normalized = validatorRegisterer.toLowerCase()
+      if (normalized === zeroAddress.toLowerCase()) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
+          path: ['PermissionedValidatorManager', 'validatorRegisterers', i],
+          message: `ValidatorRegisterer ${validatorRegisterer} cannot be the zero address`,
+        })
+      }
+      if (validatorRegistererSet.has(normalized)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['PermissionedValidatorManager', 'validatorRegisterers', i],
           message: `ValidatorRegisterer ${validatorRegisterer} must be unique`,
         })
       }
-      validatorRegistererSet.add(validatorRegisterer)
+      validatorRegistererSet.add(normalized)
     }
-    const controllerSet = new Set<Address>()
-    for (const { address, key } of flattenedControllers) {
-      if (controllerSet.has(address)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `Controller ${address} (${key}) must be unique across all validators`,
-        })
+
+    const controllerSet = new Set<string>()
+    for (let i = 0; i < data.validators.length; i++) {
+      const validator = data.validators[i]
+      for (let j = 0; j < validator.controllers.length; j++) {
+        const controller = validator.controllers[j]
+        const normalized = controller.address.toLowerCase()
+        if (normalized === zeroAddress.toLowerCase()) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['validators', i, 'controllers', j, 'address'],
+            message: `Controller ${controller.address} cannot be the zero address`,
+          })
+        }
+        if (controllerSet.has(normalized)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['validators', i, 'controllers', j, 'address'],
+            message: `Controller ${controller.address} (validators[${i}].controllers[${j}]) must be unique across all validators`,
+          })
+        }
+        controllerSet.add(normalized)
       }
-      controllerSet.add(address)
     }
 
     if (data.proxy.address != null && data.proxy.address !== DEFAULT_VALIDATOR_REGISTRY_PROXY_ADDRESS) {
